@@ -3,7 +3,8 @@ use dotenv::dotenv;
 use num_format::{Locale, ToFormattedString};
 use poise::serenity_prelude as serenity;
 use serde::Deserialize;
-use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
+use sqlx::{Pool, Postgres, postgres::PgPoolOptions, types::Json};
+use std::collections::HashMap;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -138,6 +139,53 @@ async fn lookup(
     Ok(())
 }
 
+/// Lookup a Player's Inventory - Restricted
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only = true,
+    ephemeral = true,
+    default_member_permissions = "ADMINISTRATOR"
+)]
+async fn inventory(
+    ctx: poise::Context<'_, Data, Box<dyn std::error::Error + Send + Sync>>,
+    #[description = "Target Player"] user: String,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ctx.send(match parse_fivem_steam_id(user.clone()) {
+        Ok(n) => match steam_user(n, &ctx.data().steam_key) {
+            Ok(steam_user) => {
+                match sqlx::query_scalar::<_, Json<HashMap<String, i64>>>(
+                    "select inventory from users where id = $1;",
+                )
+                .bind(user.clone())
+                .fetch_one(&ctx.data().pg_pool)
+                .await
+                {
+                    Ok(items) => poise::CreateReply::default().embed(
+                        serenity::CreateEmbed::new()
+                            .title("Inventory Lookup")
+                            .description(format!("**{}** (`{}`)", steam_user.name, user))
+                            .fields(
+                                items
+                                    .iter()
+                                    .map(|(key, value)| (key, value.to_string(), true))
+                                    .collect::<Vec<(&String, String, bool)>>(),
+                            ),
+                    ),
+                    Err(_) => poise::CreateReply::default().content("This player does not exist"),
+                }
+            }
+
+            Err(_) => {
+                poise::CreateReply::default().content("There was a problem fetching this player")
+            }
+        },
+        Err(_) => poise::CreateReply::default().content("There was a problem fetching this player"),
+    })
+    .await?;
+    Ok(())
+}
+
 fn parse_fivem_steam_id(id: String) -> Result<u64, Error> {
     let mut s = id.split(":");
     match s.next() {
@@ -168,7 +216,7 @@ async fn main() -> Result<(), Error> {
     let client_intents = serenity::GatewayIntents::non_privileged();
     let client_framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: vec![lookup()],
+            commands: vec![lookup(), inventory()],
             ..Default::default()
         })
         .setup(|ctx, _, framework| {
