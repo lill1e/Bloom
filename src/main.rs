@@ -1,5 +1,6 @@
 use ::serenity::all::ActivityData;
 use dotenv::dotenv;
+use num_format::{Locale, ToFormattedString};
 use poise::serenity_prelude as serenity;
 use serde::Deserialize;
 use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
@@ -15,6 +16,15 @@ enum Error {
     SteamFmt(),
     #[error("Steam API Error")]
     Steam(#[from] ureq::Error),
+}
+
+#[derive(sqlx::FromRow, Debug)]
+struct User {
+    id: String,
+    bank: i32,
+    clean_money: i32,
+    dirty_money: i32,
+    staff: i16,
 }
 
 #[derive(Deserialize, Debug)]
@@ -56,12 +66,75 @@ struct Data {
     pg_pool: Pool<Postgres>,
 }
 
-/// Says something
-#[poise::command(slash_command, prefix_command)]
-async fn knock(
+/// Lookup a Player from the Server - Restricted
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only = true,
+    ephemeral = true,
+    default_member_permissions = "ADMINISTRATOR"
+)]
+async fn lookup(
     ctx: poise::Context<'_, Data, Box<dyn std::error::Error + Send + Sync>>,
+    #[description = "Target Player"] user: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    ctx.say("hello world :3").await?;
+    ctx.send(match parse_fivem_steam_id(user.clone()) {
+        Ok(n) => match steam_user(n, &ctx.data().steam_key) {
+            Ok(steam_user) => match sqlx::query_as(
+                "select id, clean_money, dirty_money, bank, staff from users where id = $1;",
+            )
+            .bind(user.clone())
+            .fetch_one(&ctx.data().pg_pool)
+            .await
+            {
+                Ok(User {
+                    id: _,
+                    bank,
+                    clean_money,
+                    dirty_money,
+                    staff,
+                }) => poise::CreateReply::default().embed(
+                    serenity::CreateEmbed::new()
+                        .title("User Lookup")
+                        .description(format!(
+                            "**{}** (`{}`){}",
+                            steam_user.name,
+                            user,
+                            if staff > 0 {
+                                format!(" - Staff ({})", staff)
+                            } else {
+                                String::new()
+                            }
+                        ))
+                        .fields(vec![
+                            (
+                                "Bank",
+                                format!("${}", bank.to_formatted_string(&Locale::en_GB)),
+                                true,
+                            ),
+                            (
+                                "Cash (Clean)",
+                                format!("${}", clean_money.to_formatted_string(&Locale::en_GB)),
+                                true,
+                            ),
+                            (
+                                "Cash (Dirty)",
+                                format!("${}", dirty_money.to_formatted_string(&Locale::en_GB)),
+                                true,
+                            ),
+                        ])
+                        .thumbnail(steam_user.avatar),
+                ),
+                Err(_) => poise::CreateReply::default().content("This player does not exist"),
+            },
+
+            Err(_) => {
+                poise::CreateReply::default().content("There was a problem fetching this player")
+            }
+        },
+        Err(_) => poise::CreateReply::default().content("There was a problem fetching this player"),
+    })
+    .await?;
     Ok(())
 }
 
@@ -95,7 +168,7 @@ async fn main() -> Result<(), Error> {
     let client_intents = serenity::GatewayIntents::non_privileged();
     let client_framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: vec![knock()],
+            commands: vec![lookup()],
             ..Default::default()
         })
         .setup(|ctx, _, framework| {
