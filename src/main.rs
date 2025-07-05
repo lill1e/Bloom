@@ -24,7 +24,7 @@ async fn knock(
 }
 
 #[tokio::main]
-async fn main() -> Result<(), sqlx::Error> {
+async fn main() -> Result<(), Error> {
     dotenv().ok();
     let db = std::env::var("DATABASE_URL").expect("Missing Database URL");
     let token = std::env::var("DISCORD_TOKEN").expect("Missing Discord Token");
