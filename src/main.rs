@@ -1,7 +1,7 @@
 use ::serenity::all::ActivityData;
 use dotenv::dotenv;
 use poise::serenity_prelude as serenity;
-use sqlx::postgres::PgPoolOptions;
+use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -13,7 +13,10 @@ enum Error {
 }
 
 // Required Struct for poise
-struct Data {}
+struct Data {
+    steam_key: String,
+    pg_pool: Pool<Postgres>,
+}
 
 /// Says something
 #[poise::command(slash_command, prefix_command)]
@@ -31,6 +34,8 @@ async fn main() -> Result<(), Error> {
     let token = std::env::var("DISCORD_TOKEN").expect("Missing Discord Token");
     let steam_key = std::env::var("STEAM_API_KEY").expect("Missing Steam API Key");
 
+    let pool = PgPoolOptions::new().max_connections(5).connect(&db).await?;
+
     let client_intents = serenity::GatewayIntents::non_privileged();
     let client_framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
@@ -41,12 +46,14 @@ async fn main() -> Result<(), Error> {
             ctx.set_activity(Some(ActivityData::watching("Spectrum <3")));
             Box::pin(async move {
                 poise::builtins::register_globally(ctx, &framework.options().commands).await?;
-                Ok(Data {})
+                Ok(Data {
+                    steam_key: steam_key,
+                    pg_pool: pool,
+                })
             })
         })
         .build();
 
-    let pool = PgPoolOptions::new().max_connections(5).connect(&db).await?;
     let mut client = serenity::ClientBuilder::new(token, client_intents)
         .framework(client_framework)
         .await?;
