@@ -1,3 +1,4 @@
+use ::serenity::all::ActivityData;
 use dotenv::dotenv;
 use poise::serenity_prelude as serenity;
 use sqlx::postgres::PgPoolOptions;
@@ -36,6 +37,7 @@ async fn main() -> Result<(), Error> {
             ..Default::default()
         })
         .setup(|ctx, _, framework| {
+            ctx.set_activity(Some(ActivityData::watching("Spectrum <3")));
             Box::pin(async move {
                 poise::builtins::register_globally(ctx, &framework.options().commands).await?;
                 Ok(Data {})
