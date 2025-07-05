@@ -1,6 +1,7 @@
 use ::serenity::all::ActivityData;
 use dotenv::dotenv;
 use poise::serenity_prelude as serenity;
+use serde::Deserialize;
 use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
 use thiserror::Error;
 
@@ -10,6 +11,43 @@ enum Error {
     Postgres(#[from] sqlx::Error),
     #[error("Discord Error")]
     Discord(#[from] serenity::Error),
+    #[error("Steam Formatting Error")]
+    SteamFmt(),
+    #[error("Steam API Error")]
+    Steam(#[from] ureq::Error),
+}
+
+#[derive(Deserialize, Debug)]
+struct SteamResponse {
+    response: SteamResponseInner,
+}
+
+#[derive(Deserialize, Debug)]
+struct SteamResponseInner {
+    players: Vec<SteamResponsePlayer>,
+}
+
+#[derive(Deserialize, Debug)]
+struct SteamResponsePlayer {
+    steamid: String,
+    personaname: String,
+    avatarfull: String,
+}
+
+struct SteamUser {
+    id: String,
+    name: String,
+    avatar: String,
+}
+
+impl SteamUser {
+    fn new(resp: SteamResponse) -> Self {
+        return SteamUser {
+            id: resp.response.players[0].steamid.clone(),
+            name: resp.response.players[0].personaname.clone(),
+            avatar: resp.response.players[0].avatarfull.clone(),
+        };
+    }
 }
 
 // Required Struct for poise
@@ -25,6 +63,24 @@ async fn knock(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     ctx.say("hello world :3").await?;
     Ok(())
+}
+
+fn parse_fivem_steam_id(id: String) -> Result<u64, Error> {
+    let mut s = id.split(":");
+    match s.next() {
+        Some("steam") => match s.next() {
+            Some(s) => u64::from_str_radix(s, 16).map_err(|_| Error::SteamFmt()),
+            _ => Err(Error::SteamFmt()),
+        },
+        _ => Err(Error::SteamFmt()),
+    }
+}
+
+fn steam_user(steam_id: u64, steam_key: &str) -> Result<SteamUser, Error> {
+    return Ok(SteamUser::new(ureq::get(format!(
+        "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?key={}&format=json&steamids={}",
+       steam_key, steam_id
+    )).call()?.into_body().read_json()?));
 }
 
 #[tokio::main]
