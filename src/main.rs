@@ -28,6 +28,24 @@ struct User {
     staff: i16,
 }
 
+#[derive(sqlx::FromRow, Debug)]
+struct Ban {
+    id: i32,
+    expiry: i64,
+    reason: String,
+    staff: String,
+    user: String,
+    active: bool,
+}
+
+#[derive(sqlx::FromRow, Debug)]
+struct Warning {
+    id: i32,
+    reason: String,
+    staff: String,
+    user: String,
+}
+
 #[derive(Deserialize, Debug)]
 struct SteamResponse {
     response: SteamResponseInner,
@@ -186,6 +204,114 @@ async fn inventory(
     Ok(())
 }
 
+/// Lookup a Player's Bans & Warnings - Restricted
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only = true,
+    ephemeral = true,
+    default_member_permissions = "ADMINISTRATOR"
+)]
+async fn record(
+    ctx: poise::Context<'_, Data, Box<dyn std::error::Error + Send + Sync>>,
+    #[description = "Target Player"] user: String,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ctx.send(match parse_fivem_steam_id(user.clone()) {
+        Ok(n) => match steam_user(n, &ctx.data().steam_key) {
+            Ok(steam_user) => match sqlx::query_as(
+                "select id, clean_money, dirty_money, bank, staff from users where id = $1;",
+            )
+            .bind(user.clone())
+            .fetch_one(&ctx.data().pg_pool)
+            .await
+            {
+                Ok(User {
+                    id,
+                    bank: _,
+                    clean_money: _,
+                    dirty_money: _,
+                    staff: _,
+                }) => {
+                    match (
+                        sqlx::query_as::<_, Ban>("select * from bans where \"user\" = $1")
+                            .bind(&id)
+                            .fetch_all(&ctx.data().pg_pool)
+                            .await,
+                        sqlx::query_as::<_, Warning>("select * from warnings where \"user\" = $1")
+                            .bind(&id)
+                            .fetch_all(&ctx.data().pg_pool)
+                            .await,
+                    ) {
+                        (Ok(bans), Ok(warnings)) => poise::CreateReply::default().embed(
+                            serenity::CreateEmbed::new()
+                                .title(if bans.len() + warnings.len() > 0 {
+                                    "Record Lookup"
+                                } else {
+                                    "Clean Record"
+                                })
+                                .description(format!("**{}** (`{}`)", steam_user.name, user))
+                                .fields(bans.iter().map(
+                                    |Ban {
+                                         id,
+                                         expiry,
+                                         reason,
+                                         staff,
+                                         user: _,
+                                         active,
+                                     }| {
+                                        (
+                                            format!("Banned By: {}", staff),
+                                            format!(
+                                                "ID: {}{}\nReason: {}\nExpires: <t:{}>",
+                                                id,
+                                                if *active { "" } else { " (Lifted)" },
+                                                reason,
+                                                expiry
+                                            ),
+                                            false,
+                                        )
+                                    },
+                                ))
+                                .fields(warnings.iter().map(
+                                    |Warning {
+                                         id,
+                                         reason,
+                                         staff,
+                                         user: _,
+                                     }| {
+                                        (
+                                            format!("Warned By: {}", staff),
+                                            format!("ID: {}\nReason: {}", id, reason),
+                                            false,
+                                        )
+                                    },
+                                ))
+                                .thumbnail(steam_user.avatar),
+                        ),
+                        _ => poise::CreateReply::default().embed(
+                            serenity::CreateEmbed::new()
+                                .title("Record Lookup")
+                                .description(format!(
+                                    "**{}** (`{}`)\n\nThis player has a squeaky clean record",
+                                    steam_user.name, user,
+                                ))
+                                .thumbnail(steam_user.avatar),
+                        ),
+                    }
+                }
+                Err(_) => poise::CreateReply::default().content("This player does not exist"),
+            },
+
+            Err(_) => {
+                poise::CreateReply::default().content("There was a problem fetching this player")
+            }
+        },
+        Err(_) => poise::CreateReply::default().content("There was a problem fetching this player"),
+    })
+    .await?;
+    Ok(())
+}
+
 fn parse_fivem_steam_id(id: String) -> Result<u64, Error> {
     let mut s = id.split(":");
     match s.next() {
@@ -216,7 +342,7 @@ async fn main() -> Result<(), Error> {
     let client_intents = serenity::GatewayIntents::non_privileged();
     let client_framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: vec![lookup(), inventory()],
+            commands: vec![lookup(), inventory(), record()],
             ..Default::default()
         })
         .setup(|ctx, _, framework| {
