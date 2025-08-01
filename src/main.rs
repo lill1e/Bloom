@@ -6,6 +6,9 @@ use serde::Deserialize;
 use sqlx::{Pool, Postgres, postgres::PgPoolOptions, types::Json};
 use std::collections::HashMap;
 use thiserror::Error;
+use ureq::http::StatusCode;
+
+static SERVER_IP: &str = "http://192.168.1.18";
 
 #[derive(Error, Debug)]
 enum Error {
@@ -79,11 +82,142 @@ impl SteamUser {
     }
 }
 
+#[derive(Deserialize, Debug)]
+struct ServerPlayerMoney {
+    clean: i32,
+    dirty: i32,
+    bank: i32,
+}
+
+#[derive(Deserialize, Debug)]
+struct ServerPlayer {
+    id: String,
+    active: bool,
+    name: String,
+    staff: i16,
+    money: ServerPlayerMoney,
+    items: HashMap<String, i64>,
+    weapons: HashMap<String, String>,
+    ammo: HashMap<String, i64>,
+}
+
 // Required Struct for poise
 struct Data {
     steam_key: String,
     pg_pool: Pool<Postgres>,
     verify_id: String,
+}
+
+/// Lookup a Player in the Server - Restricted
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only = true,
+    ephemeral = true,
+    default_member_permissions = "ADMINISTRATOR"
+)]
+async fn lookup_id(
+    ctx: poise::Context<'_, Data, Box<dyn std::error::Error + Send + Sync>>,
+    #[description = "Target Player"] user: i64,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ctx.send(
+        match ureq::get(format!("{}:30120/spectrum/users", SERVER_IP))
+            .header("v", &ctx.data().verify_id)
+            .header("id", user)
+            .call()
+        {
+            Ok(response) => match response.status() {
+                StatusCode::OK => match response.into_body().read_json::<ServerPlayer>() {
+                    Ok(player) => poise::CreateReply::default().embed(
+                        serenity::CreateEmbed::new()
+                            .title(format!(
+                                "User Lookup (Server){}",
+                                if player.active {
+                                    String::new()
+                                } else {
+                                    String::from(" - Offline")
+                                }
+                            ))
+                            .description(format!(
+                                "**{}** (`{}`){}",
+                                player.name,
+                                player.id,
+                                if player.staff > 0 {
+                                    format!(" - Staff ({})", player.staff)
+                                } else {
+                                    String::new()
+                                }
+                            ))
+                            .fields(vec![
+                                (
+                                    "Bank",
+                                    format!(
+                                        "${}",
+                                        player.money.bank.to_formatted_string(&Locale::en_GB)
+                                    ),
+                                    true,
+                                ),
+                                (
+                                    "Cash (Clean)",
+                                    format!(
+                                        "${}",
+                                        player.money.clean.to_formatted_string(&Locale::en_GB)
+                                    ),
+                                    true,
+                                ),
+                                (
+                                    "Cash (Dirty)",
+                                    format!(
+                                        "${}",
+                                        player.money.dirty.to_formatted_string(&Locale::en_GB)
+                                    ),
+                                    true,
+                                ),
+                                (
+                                    "Inventory",
+                                    player
+                                        .items
+                                        .iter()
+                                        .map(|(item, count)| format!("x{} {}", count, item))
+                                        .collect::<Vec<String>>()
+                                        .join("\n"),
+                                    false,
+                                ),
+                                (
+                                    "Weapons",
+                                    player
+                                        .weapons
+                                        .iter()
+                                        .map(|(id, weapon)| format!("{} ({})", weapon, id))
+                                        .collect::<Vec<String>>()
+                                        .join("\n"),
+                                    false,
+                                ),
+                                (
+                                    "Ammo",
+                                    player
+                                        .ammo
+                                        .iter()
+                                        .map(|(ammo_type, count)| {
+                                            format!("{}: {}", ammo_type, count)
+                                        })
+                                        .collect::<Vec<String>>()
+                                        .join("\n"),
+                                    false,
+                                ),
+                            ]),
+                    ),
+                    Err(_) => poise::CreateReply::default().content("This player does not exist"),
+                },
+                _ => poise::CreateReply::default().content("This player does not exist"),
+            },
+            Err(_) => {
+                poise::CreateReply::default().content("There was a problem reaching the server")
+            }
+        },
+    )
+    .await?;
+    Ok(())
 }
 
 /// Lookup a Player from the Server - Restricted
@@ -344,7 +478,7 @@ async fn main() -> Result<(), Error> {
     let client_intents = serenity::GatewayIntents::non_privileged();
     let client_framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: vec![lookup(), inventory(), record()],
+            commands: vec![lookup_id(), lookup(), inventory(), record()],
             ..Default::default()
         })
         .setup(|ctx, _, framework| {
