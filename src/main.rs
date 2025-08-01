@@ -83,6 +83,7 @@ impl SteamUser {
 struct Data {
     steam_key: String,
     pg_pool: Pool<Postgres>,
+    verify_id: String,
 }
 
 /// Lookup a Player from the Server - Restricted
@@ -336,6 +337,7 @@ async fn main() -> Result<(), Error> {
     let db = std::env::var("DATABASE_URL").expect("Missing Database URL");
     let token = std::env::var("DISCORD_TOKEN").expect("Missing Discord Token");
     let steam_key = std::env::var("STEAM_API_KEY").expect("Missing Steam API Key");
+    let verify_id = std::env::var("VERIFY_ID").expect("Missing Bridge Verify ID");
 
     let pool = PgPoolOptions::new().max_connections(5).connect(&db).await?;
 
@@ -352,6 +354,7 @@ async fn main() -> Result<(), Error> {
                 Ok(Data {
                     steam_key: steam_key,
                     pg_pool: pool,
+                    verify_id,
                 })
             })
         })
